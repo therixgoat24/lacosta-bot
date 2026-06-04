@@ -3,7 +3,11 @@ if (existsSync('.env')) {
   const { config } = await import('dotenv');
   config();
 }
-import { Client, GatewayIntentBits, EmbedBuilder, MessageFlags } from 'discord.js';
+import {
+  Client, GatewayIntentBits, EmbedBuilder, MessageFlags,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle,
+  ChannelType, PermissionFlagsBits,
+} from 'discord.js';
 
 const {
   DISCORD_BOT_TOKEN,
@@ -19,6 +23,9 @@ if (!DISCORD_BOT_TOKEN || !API_BASE_URL || !BOT_API_TOKEN) {
 
 const ALLOWED_ROLE_ID = '1498812095926501447';
 const ADMIN_IDS = new Set(ADMIN_DISCORD_IDS.split(',').map(s => s.trim()).filter(Boolean));
+
+// ---------- Ticket config ----------
+const TICKET_CATEGORY_ID = '1501226492573782107';
 
 // ---------- API helper ----------
 async function api(action, params = {}) {
@@ -44,13 +51,12 @@ async function lookup(discordId) {
   return res.ok ? res.json() : { found: false, is_admin: false };
 }
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
 // ---------- helpers ----------
 function parseDuration(input) {
   if (!input) return 0;
   const s = String(input).trim().toLowerCase();
-  // Accept formats like 30s, 10m, 2h, 1d, or combined "1h30m"
   const re = /(\d+)\s*(s|sec|secs|seconds|m|min|mins|minutes|h|hr|hrs|hours|d|day|days)/g;
   let total = 0, match, matched = false;
   while ((match = re.exec(s)) !== null) {
@@ -62,7 +68,7 @@ function parseDuration(input) {
     else if (u.startsWith('h')) total += n * 3_600_000;
     else if (u.startsWith('d')) total += n * 86_400_000;
   }
-  if (!matched && /^\d+$/.test(s)) total = parseInt(s, 10) * 1000; // bare number = seconds
+  if (!matched && /^\d+$/.test(s)) total = parseInt(s, 10) * 1000;
   return total;
 }
 
@@ -102,11 +108,86 @@ async function findTarget(interaction) {
   return { row: target, display: user.username, mention: `<@${user.id}>` };
 }
 
+// ---------- ticket handlers ----------
+async function createTicket(interaction, type) {
+  const guild = interaction.guild;
+  const user = interaction.user;
+  const label = type === 'support' ? 'support' : 'partner';
+  const safeName = user.username.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  const existing = guild.channels.cache.find(
+    c => c.name === `${label}-${safeName}` && c.parentId === TICKET_CATEGORY_ID
+  );
+  if (existing) {
+    return interaction.reply({
+      content: `❌ You already have an open ticket: ${existing}`,
+      flags: MessageFlags.Ephemeral,
+    });
+  }
+
+  const channel = await guild.channels.create({
+    name: `${label}-${safeName}`,
+    type: ChannelType.GuildText,
+    parent: TICKET_CATEGORY_ID,
+    permissionOverwrites: [
+      { id: guild.roles.everyone, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+      { id: ALLOWED_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+    ],
+  });
+
+  const closeRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('ticket_close')
+      .setLabel('🔒 Close Ticket')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  const embed = new EmbedBuilder()
+    .setColor(type === 'support' ? 0xf59e0b : 0x22c55e)
+    .setTitle(type === 'support' ? '🔧 Support Ticket' : '🤝 Partner Ticket')
+    .setDescription(
+      type === 'support'
+        ? `Hello ${user}! 👋\nDescribe your issue as clearly as possible.\nOur team will get back to you as soon as possible.`
+        : `Hello ${user}! 👋\nTell us about your partnership offer.\nOur team will get back to you as soon as possible.`
+    )
+    .setFooter({ text: `Ticket by ${user.username}` })
+    .setTimestamp();
+
+  await channel.send({ content: `${user} | <@&${ALLOWED_ROLE_ID}>`, embeds: [embed], components: [closeRow] });
+  await interaction.reply({ content: `✅ Your ticket has been created: ${channel}`, flags: MessageFlags.Ephemeral });
+}
+
+async function closeTicket(interaction) {
+  await interaction.reply({ content: '🔒 Ticket will be closed in 5 seconds…' });
+  setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
+}
+
+async function handleSetupTicket(interaction) {
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('🎫 Support System')
+    .setDescription(
+      'Need help or want to partner with us?\n\n' +
+      '🔧 **Support Ticket**\nGet help with issues, questions, or problems\n\n' +
+      '🤝 **Partner Ticket**\nDiscuss partnership opportunities'
+    )
+    .setFooter({ text: `Click a button to create a ticket • ${new Date().toLocaleDateString('en-GB')} ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` });
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('ticket_support').setLabel('🔧 Support Ticket').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('ticket_partner').setLabel('🤝 Partner Ticket').setStyle(ButtonStyle.Success),
+  );
+
+  await interaction.channel.send({ embeds: [embed], components: [row] });
+  await interaction.reply({ content: '✅ Support panel posted!', flags: MessageFlags.Ephemeral });
+}
+
 // ---------- command handlers ----------
 async function handleCredits(interaction, admin) {
   const amount = interaction.options.getInteger('amount', true);
   const t = await findTarget(interaction);
-  if (!t.row) return interaction.editReply(`❌ Target user not found (provide \`username\` or a linked @user).`);
+  if (!t.row) return interaction.editReply('❌ Target user not found (provide `username` or a linked @user).');
 
   try {
     await api('adjust_credits', { target_id: t.row.id, delta: amount });
@@ -128,7 +209,7 @@ async function handleWhitelist(interaction, admin) {
   if (!['free', 'gold', 'diamond'].includes(rank)) return interaction.editReply('❌ Invalid rank');
 
   const t = await findTarget(interaction);
-  if (!t.row) return interaction.editReply(`❌ Target user not found (provide \`username\` or a linked @user).`);
+  if (!t.row) return interaction.editReply('❌ Target user not found (provide `username` or a linked @user).');
 
   try {
     await api('set_rank', { target_id: t.row.id, rank });
@@ -184,7 +265,6 @@ async function handleGiveaway(interaction, admin) {
   const durationMs = parseDuration(durationStr);
   const rewardLabel = reward === 'credits' ? `**${amount} credits**` : `**${reward}** rank (30d)`;
 
-  // ===== Instant giveaway (no timer) =====
   if (durationMs <= 0) {
     let res;
     try {
@@ -211,7 +291,6 @@ async function handleGiveaway(interaction, admin) {
     });
   }
 
-  // ===== Timed giveaway =====
   const endsAt = Date.now() + durationMs;
   const endsUnix = Math.floor(endsAt / 1000);
 
@@ -257,10 +336,7 @@ async function handleGiveaway(interaction, admin) {
         .setFooter({ text: `hosted by ${admin.profile.username}` })
         .setTimestamp();
 
-      const mentions = res.picked
-        .filter(w => w.discord_id)
-        .map(w => `<@${w.discord_id}>`)
-        .join(' ');
+      const mentions = res.picked.filter(w => w.discord_id).map(w => `<@${w.discord_id}>`).join(' ');
 
       await interaction.editReply({
         embeds: [ended],
@@ -278,6 +354,15 @@ async function handleGiveaway(interaction, admin) {
 
 // ---------- router ----------
 client.on('interactionCreate', async (interaction) => {
+
+  // ---- Buttons (tickets) ----
+  if (interaction.isButton()) {
+    if (interaction.customId === 'ticket_support') return createTicket(interaction, 'support');
+    if (interaction.customId === 'ticket_partner') return createTicket(interaction, 'partner');
+    if (interaction.customId === 'ticket_close')   return closeTicket(interaction);
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   try {
@@ -295,6 +380,9 @@ client.on('interactionCreate', async (interaction) => {
         allowedMentions: { parse: [] },
       });
     }
+
+    // /setup must run before deferReply
+    if (interaction.commandName === 'setup') return handleSetupTicket(interaction);
 
     const ephemeral = interaction.commandName !== 'giveaway';
     await interaction.deferReply(ephemeral ? { flags: MessageFlags.Ephemeral } : {});
@@ -315,7 +403,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-client.once('ready', () => {
+client.once('clientReady', () => {
   console.log(`✅ Logged in as ${client.user.tag} | role gate: ${ALLOWED_ROLE_ID} | admin bypass IDs: ${[...ADMIN_IDS].join(',') || '(none)'}`);
 });
 
