@@ -202,6 +202,7 @@ async function handleCredits(interaction, admin) {
     .setFooter({ text: `by ${admin.profile.username}` })
     .setTimestamp();
   await interaction.editReply({ embeds: [embed] });
+  await interaction.channel.send({ content: `💎 **${Math.abs(amount)} credits** ${amount >= 0 ? 'added to' : 'removed from'} **${t.row.username}**` });
 }
 
 async function handleWhitelist(interaction, admin) {
@@ -224,6 +225,8 @@ async function handleWhitelist(interaction, admin) {
     .setFooter({ text: `by ${admin.profile.username}` })
     .setTimestamp();
   await interaction.editReply({ embeds: [embed] });
+  const rankEmoji = rank === 'diamond' ? '💎' : rank === 'gold' ? '👑' : '🗑️';
+  await interaction.channel.send({ content: rank === 'free' ? `🗑️ **${t.row.username}** had their rank removed.` : `${rankEmoji} **${rank} rank** added to **${t.row.username}**` });
 }
 
 async function drawAndAwardGiveaway({ reward, winners, amount, admin }) {
