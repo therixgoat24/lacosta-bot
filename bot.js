@@ -22,10 +22,18 @@ if (!DISCORD_BOT_TOKEN || !API_BASE_URL || !BOT_API_TOKEN) {
 }
 
 const ALLOWED_ROLE_ID = '1498812095926501447';
+const OFFLINE_ROLE_ID = '1498812156827668491';
 const ADMIN_IDS = new Set(ADMIN_DISCORD_IDS.split(',').map(s => s.trim()).filter(Boolean));
 
 // ---------- Ticket config ----------
 const TICKET_CATEGORY_ID = '1501226492573782107';
+
+// ---------- Offline state ----------
+const offlineState = { active: false, reason: '', userId: null };
+
+// ---------- Automod config ----------
+const LINK_REGEX = /(https?:\/\/|discord\.gg\/|www\.)[^\s]+/gi;
+const INVITE_REGEX = /discord\.(gg|com\/invite)\/[^\s]+/gi;
 
 // ---------- API helper ----------
 async function api(action, params = {}) {
@@ -51,7 +59,12 @@ async function lookup(discordId) {
   return res.ok ? res.json() : { found: false, is_admin: false };
 }
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
+const client = new Client({ intents: [
+  GatewayIntentBits.Guilds,
+  GatewayIntentBits.GuildMembers,
+  GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.MessageContent,
+] });
 
 // ---------- helpers ----------
 function parseDuration(input) {
@@ -183,7 +196,26 @@ async function handleSetupTicket(interaction) {
   await interaction.reply({ content: '✅ Support panel posted!', flags: MessageFlags.Ephemeral });
 }
 
-// ---------- command handlers ----------
+// ---------- offline handler ----------
+async function handleOffline(interaction, admin) {
+  const reason = interaction.options.getString('reason');
+
+  if (offlineState.active && offlineState.userId === interaction.user.id) {
+    // toggle off
+    offlineState.active = false;
+    offlineState.reason = '';
+    offlineState.userId = null;
+    return interaction.editReply('✅ You are now marked as **online** again.');
+  }
+
+  offlineState.active = true;
+  offlineState.reason = reason || 'No reason provided.';
+  offlineState.userId = interaction.user.id;
+
+  await interaction.editReply(`✅ You are now marked as **offline**. Reason: *${offlineState.reason}*`);
+}
+
+
 async function handleCredits(interaction, admin) {
   const amount = interaction.options.getInteger('amount', true);
   const t = await findTarget(interaction);
@@ -355,6 +387,46 @@ async function handleGiveaway(interaction, admin) {
   }, durationMs);
 }
 
+// ---------- messageCreate (automod + offline ping) ----------
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+
+  const member = message.member;
+  const isAdmin = member &&
+    (typeof member.roles?.cache?.has === 'function'
+      ? member.roles.cache.has(ALLOWED_ROLE_ID)
+      : Array.isArray(member.roles) && member.roles.includes(ALLOWED_ROLE_ID));
+
+  // ---- Automod: delete links/invites for non-admins ----
+  if (!isAdmin) {
+    if (INVITE_REGEX.test(message.content)) {
+      await message.delete().catch(() => {});
+      return message.channel.send({
+        content: `🚫 ${message.author} Discord invites are not allowed here.`,
+      }).then(m => setTimeout(() => m.delete().catch(() => {}), 5000));
+    }
+    if (LINK_REGEX.test(message.content)) {
+      await message.delete().catch(() => {});
+      return message.channel.send({
+        content: `🚫 ${message.author} Links are not allowed here.`,
+      }).then(m => setTimeout(() => m.delete().catch(() => {}), 5000));
+    }
+  }
+
+  // ---- Offline ping detection ----
+  if (offlineState.active && offlineState.userId) {
+    const pinged = message.mentions.users.has(offlineState.userId);
+    if (pinged) {
+      const offlineUser = await message.guild.members.fetch(offlineState.userId).catch(() => null);
+      const name = offlineUser?.user?.username ?? 'That user';
+      await message.reply({
+        content: `📴 **${name}** is currently offline.\n> *${offlineState.reason}*`,
+        allowedMentions: { parse: [] },
+      });
+    }
+  }
+});
+
 // ---------- router ----------
 client.on('interactionCreate', async (interaction) => {
 
@@ -370,11 +442,19 @@ client.on('interactionCreate', async (interaction) => {
 
   try {
     const member = interaction.member;
-    const hasRole =
+    const hasAdminRole =
       member &&
       (typeof member.roles?.cache?.has === 'function'
         ? member.roles.cache.has(ALLOWED_ROLE_ID)
         : Array.isArray(member.roles) && member.roles.includes(ALLOWED_ROLE_ID));
+
+    const hasOfflineRole =
+      member &&
+      (typeof member.roles?.cache?.has === 'function'
+        ? member.roles.cache.has(OFFLINE_ROLE_ID)
+        : Array.isArray(member.roles) && member.roles.includes(OFFLINE_ROLE_ID));
+
+    const hasRole = hasAdminRole || (interaction.commandName === 'offline' && hasOfflineRole);
 
     if (!hasRole) {
       return interaction.reply({
@@ -384,7 +464,7 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
-    // /setup must run before deferReply
+    // /setup and /offline must run before deferReply
     if (interaction.commandName === 'setup') return handleSetupTicket(interaction);
 
     const ephemeral = interaction.commandName !== 'giveaway';
@@ -396,6 +476,7 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.commandName === 'credits')   return handleCredits(interaction, admin);
     if (interaction.commandName === 'whitelist') return handleWhitelist(interaction, admin);
     if (interaction.commandName === 'giveaway')  return handleGiveaway(interaction, admin);
+    if (interaction.commandName === 'offline')   return handleOffline(interaction, admin);
 
     await interaction.editReply('Unknown command.');
   } catch (err) {
