@@ -47,6 +47,12 @@ const commands = [
     .setName('setup')
     .setDescription('Post the ticket panel in this channel')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+  new SlashCommandBuilder()
+    .setName('offline')
+    .setDescription('Mark yourself as offline – bot will auto-reply to pings. Run again to go online.')
+    .addStringOption(o => o.setName('reason').setDescription('Reason for being offline').setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(DISCORD_BOT_TOKEN);
