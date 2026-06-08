@@ -50,8 +50,13 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('offline')
-    .setDescription('Mark yourself as offline – bot will auto-reply to pings. Run again to go online.')
+    .setDescription('Mark yourself as offline – bot will auto-reply to pings')
     .addStringOption(o => o.setName('reason').setDescription('Reason for being offline').setRequired(false))
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+  new SlashCommandBuilder()
+    .setName('unoffline')
+    .setDescription('Mark yourself as online again')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 ].map(c => c.toJSON());
 
