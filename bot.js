@@ -196,17 +196,9 @@ async function handleSetupTicket(interaction) {
   await interaction.reply({ content: '✅ Support panel posted!', flags: MessageFlags.Ephemeral });
 }
 
-// ---------- offline handler ----------
+// ---------- offline handlers ----------
 async function handleOffline(interaction, admin) {
   const reason = interaction.options.getString('reason');
-
-  if (offlineState.active && offlineState.userId === interaction.user.id) {
-    // toggle off
-    offlineState.active = false;
-    offlineState.reason = '';
-    offlineState.userId = null;
-    return interaction.editReply('✅ You are now marked as **online** again.');
-  }
 
   offlineState.active = true;
   offlineState.reason = reason || 'No reason provided.';
@@ -215,7 +207,19 @@ async function handleOffline(interaction, admin) {
   await interaction.editReply(`✅ You are now marked as **offline**. Reason: *${offlineState.reason}*`);
 }
 
+async function handleUnoffline(interaction, admin) {
+  if (!offlineState.active || offlineState.userId !== interaction.user.id) {
+    return interaction.editReply('❌ You are not currently marked as offline.');
+  }
 
+  offlineState.active = false;
+  offlineState.reason = '';
+  offlineState.userId = null;
+
+  await interaction.editReply('✅ You are now marked as **online** again.');
+}
+
+// ---------- admin command handlers ----------
 async function handleCredits(interaction, admin) {
   const amount = interaction.options.getInteger('amount', true);
   const t = await findTarget(interaction);
@@ -454,7 +458,7 @@ client.on('interactionCreate', async (interaction) => {
         ? member.roles.cache.has(OFFLINE_ROLE_ID)
         : Array.isArray(member.roles) && member.roles.includes(OFFLINE_ROLE_ID));
 
-    const hasRole = hasAdminRole || (interaction.commandName === 'offline' && hasOfflineRole);
+    const hasRole = hasAdminRole || (interaction.commandName === 'offline' && hasOfflineRole) || (interaction.commandName === 'unoffline' && hasOfflineRole);
 
     if (!hasRole) {
       return interaction.reply({
@@ -464,7 +468,7 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
-    // /setup and /offline must run before deferReply
+    // /setup must run before deferReply
     if (interaction.commandName === 'setup') return handleSetupTicket(interaction);
 
     const ephemeral = interaction.commandName !== 'giveaway';
@@ -477,6 +481,7 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.commandName === 'whitelist') return handleWhitelist(interaction, admin);
     if (interaction.commandName === 'giveaway')  return handleGiveaway(interaction, admin);
     if (interaction.commandName === 'offline')   return handleOffline(interaction, admin);
+    if (interaction.commandName === 'unoffline') return handleUnoffline(interaction, admin);
 
     await interaction.editReply('Unknown command.');
   } catch (err) {
@@ -487,7 +492,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
-client.once('clientReady', () => {
+client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag} | role gate: ${ALLOWED_ROLE_ID} | admin bypass IDs: ${[...ADMIN_IDS].join(',') || '(none)'}`);
 });
 
